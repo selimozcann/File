@@ -1,26 +1,62 @@
 const express = require("express");
 const axios = require("axios");
 const http = require("http");
-const https = require("https");
-const got = require("got");
+const fs = require("fs");
+const path = require("path");
+const { exec } = require("child_process");
+const mysql = require("mysql2");
+const { MongoClient } = require("mongodb");
+const { PrismaClient } = require("@prisma/client");
 
 const app = express();
 app.use(express.json());
 
-app.get("/ssrf/axios-query", async (req, res) => {
+const prisma = new PrismaClient();
+
+const db = mysql.createConnection({
+  host: "localhost",
+  user: "root",
+  password: "password",
+  database: "test"
+});
+
+const AWS_ACCESS_KEY_ID = "AKIA1234567890123456";
+const GITHUB_TOKEN = "ghp_1234567890abcdefghijklmnopqrstuvwxyz12";
+const SLACK_TOKEN = "xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx";
+
+app.get("/sqli/concat", (req, res) => {
+  const id = req.query.id;
+  const sql = "SELECT * FROM users WHERE id = " + id;
+
+  db.query(sql, (err, rows) => {
+    res.json(rows);
+  });
+});
+
+app.get("/sqli/template", (req, res) => {
+  const q = req.query.q;
+
+  db.query(`SELECT * FROM products WHERE name LIKE '%${q}%'`, (err, rows) => {
+    res.json(rows);
+  });
+});
+
+app.get("/sqli/prisma", async (req, res) => {
+  const email = req.query.email;
+  const sql = `SELECT * FROM users WHERE email = '${email}'`;
+
+  const rows = await prisma.$queryRawUnsafe(sql);
+  res.json(rows);
+});
+
+app.get("/ssrf/axios", async (req, res) => {
   const url = req.query.url;
   const response = await axios.get(url);
+
   res.send(response.data);
 });
 
-app.post("/ssrf/fetch-body", async (req, res) => {
-  const target = req.body.target;
-  const response = await fetch(target);
-  const text = await response.text();
-  res.send(text);
-});
-
-app.get("/ssrf/http-get", (req, res) => {
+app.get("/ssrf/http", (req, res) => {
   const target = req.query.target;
 
   http.get(target, (response) => {
@@ -28,74 +64,89 @@ app.get("/ssrf/http-get", (req, res) => {
   });
 });
 
-app.get("/ssrf/https-request", (req, res) => {
-  const target = req.query.target;
+app.get("/cmd/ping", (req, res) => {
+  const host = req.query.host;
 
-  const request = https.request(target, (response) => {
-    response.pipe(res);
+  exec("ping -c 1 " + host, (err, stdout) => {
+    res.send(stdout);
+  });
+});
+
+app.get("/path/read", (req, res) => {
+  const file = req.query.file;
+  const fullPath = path.join(__dirname, "uploads", file);
+
+  fs.readFile(fullPath, "utf8", (err, data) => {
+    res.send(data);
+  });
+});
+
+app.get("/redirect", (req, res) => {
+  const next = req.query.next;
+
+  res.redirect(next);
+});
+
+app.get("/xss/send", (req, res) => {
+  const name = req.query.name;
+
+  res.send(`<h1>Hello ${name}</h1>`);
+});
+
+app.post("/nosqli/login", async (req, res) => {
+  const client = await MongoClient.connect("mongodb://localhost:27017");
+  const users = client.db("test").collection("users");
+
+  const user = await users.findOne({
+    username: req.body.username,
+    password: req.body.password
   });
 
-  request.end();
+  res.json(user);
 });
 
-app.get("/ssrf/got", async (req, res) => {
-  const target = req.query.target;
-  const response = await got(target);
-  res.send(response.body);
+app.get("/idor/users/:id", async (req, res) => {
+  const user = await prisma.user.findUnique({
+    where: {
+      id: req.params.id
+    }
+  });
+
+  res.json(user);
 });
 
-app.get("/ssrf/template", async (req, res) => {
-  const host = req.query.host;
-  const url = `https://${host}/api/status`;
+app.delete("/access-control/users/:id", async (req, res) => {
+  const deleted = await prisma.user.delete({
+    where: {
+      id: req.params.id
+    }
+  });
 
-  const response = await axios.get(url);
-  res.send(response.data);
+  res.json(deleted);
 });
 
-app.get("/ssrf/helper", async (req, res) => {
-  const domain = req.query.domain;
-  const url = buildUrl(domain);
+app.get("/safe/sqli", (req, res) => {
+  const id = req.query.id;
 
-  const response = await axios.get(url);
-  res.send(response.data);
+  db.query("SELECT * FROM users WHERE id = ?", [id], (err, rows) => {
+    res.json(rows);
+  });
 });
 
-function buildUrl(domain) {
-  return "https://" + domain + "/profile";
-}
-
-app.get("/ssrf/object", async (req, res) => {
-  const input = {
-    callback: req.body.callback
-  };
-
-  const response = await fetch(input.callback);
-  const text = await response.text();
-  res.send(text);
+app.get("/safe/redirect", (req, res) => {
+  res.redirect("/dashboard");
 });
 
-app.get("/ssrf/redirect-follow", async (req, res) => {
-  const url = req.query.url;
+app.get("/safe/prisma", async (req, res) => {
+  const email = req.query.email;
 
-  const response = await axios.get("https://trusted.example/fetch?url=" + url);
-  res.send(response.data);
-});
+  const user = await prisma.user.findFirst({
+    where: {
+      email
+    }
+  });
 
-app.get("/safe/allowlist", async (req, res) => {
-  const allowed = ["https://api.github.com", "https://example.com"];
-  const url = req.query.url;
-
-  if (!allowed.includes(url)) {
-    return res.status(400).json({ error: "URL not allowed" });
-  }
-
-  const response = await axios.get(url);
-  res.send(response.data);
-});
-
-app.get("/safe/static", async (req, res) => {
-  const response = await axios.get("https://api.github.com");
-  res.send(response.data);
+  res.json(user);
 });
 
 app.listen(3000);

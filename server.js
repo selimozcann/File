@@ -1,41 +1,85 @@
 const express = require("express");
-const axios = require("axios");
-const http = require("http");
-const https = require("https");
 
 const app = express();
 app.use(express.json());
 
-app.get("/fetch", async (req, res) => {
-  const url = req.query.url;
-  const response = await axios.get(url);
-  res.send(response.data);
+app.get("/xss/query-send", (req, res) => {
+  const name = req.query.name;
+  res.send("<h1>Hello " + name + "</h1>");
 });
 
-app.post("/webhook/test", async (req, res) => {
-  const target = req.body.target;
-  const response = await fetch(target);
-  const text = await response.text();
-  res.send(text);
+app.get("/xss/template-send", (req, res) => {
+  const q = req.query.q;
+  res.send(`<div>Search result for: ${q}</div>`);
 });
 
-app.get("/proxy", (req, res) => {
-  const target = req.query.target;
-  http.get(target, (response) => {
-    response.pipe(res);
+app.post("/xss/body-html", (req, res) => {
+  const bio = req.body.bio;
+  const html = "<html><body><p>" + bio + "</p></body></html>";
+  res.send(html);
+});
+
+app.get("/xss/header", (req, res) => {
+  const title = req.query.title;
+  res.setHeader("Content-Type", "text/html");
+  res.end("<title>" + title + "</title>");
+});
+
+app.get("/xss/render", (req, res) => {
+  const username = req.query.username;
+  res.render("profile", {
+    html: username
   });
 });
 
-app.get("/secure-fetch", async (req, res) => {
-  const allowed = ["https://api.github.com", "https://example.com"];
-  const url = req.query.url;
+app.get("/xss/jsonp", (req, res) => {
+  const callback = req.query.callback;
+  const data = JSON.stringify({ ok: true });
+  res.send(callback + "(" + data + ")");
+});
 
-  if (!allowed.includes(url)) {
-    return res.status(400).json({ error: "URL not allowed" });
-  }
+app.get("/xss/redirect-fragment", (req, res) => {
+  const message = req.query.message;
+  res.send(`
+    <script>
+      document.body.innerHTML = "${message}";
+    </script>
+  `);
+});
 
-  const response = await axios.get(url);
-  res.send(response.data);
+app.get("/xss/helper", (req, res) => {
+  const value = req.query.value;
+  const html = buildHtml(value);
+  res.send(html);
+});
+
+function buildHtml(value) {
+  return "<section>" + value + "</section>";
+}
+
+app.get("/safe/text", (req, res) => {
+  const name = req.query.name;
+  res.type("text/plain");
+  res.send("Hello " + name);
+});
+
+app.get("/safe/escape", (req, res) => {
+  const name = req.query.name;
+  const safe = String(name)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+
+  res.send("<h1>Hello " + safe + "</h1>");
+});
+
+app.get("/safe/json", (req, res) => {
+  const q = req.query.q;
+  res.json({
+    query: q
+  });
 });
 
 app.listen(3000);
